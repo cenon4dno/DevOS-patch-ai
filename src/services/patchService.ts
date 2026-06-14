@@ -16,6 +16,7 @@ import { buildChangePlan } from './changePlanService';
 import { applyChangePlan } from './implementationService';
 import { runTests } from './testRunnerService';
 import { createPullRequest } from './githubService';
+import { PatchProgressReporter } from './progressReporterService';
 import { PatchResult, PatchFile, TestResult } from '../types';
 import logger from '../utils/logger';
 
@@ -28,8 +29,13 @@ export async function submitPatch(input: PatchInputData): Promise<void> {
 export async function executePatch(input: PatchInputData): Promise<void> {
   const { patch_id } = input;
   const traceId = `${TRACE_PREFIX}-${patch_id}-${Date.now()}`;
+  const targetAgent = input.target_agent.name;
+  const progress = new PatchProgressReporter(patch_id, targetAgent);
 
   logger.info('Patch execution started', { trace_id: traceId, patch_id, type: input.assignment.type });
+
+  // Confirm receipt immediately before any async work begins
+  await progress.report('RECEIVE', `Assignment ${patch_id} accepted — queuing patch pipeline`);
 
   let localPath = '';
   let branchName = '';
@@ -39,12 +45,16 @@ export async function executePatch(input: PatchInputData): Promise<void> {
   try {
     // Step 2-3: Clone + branch
     await updatePatchStatus(patch_id, 'analyzing');
+    await progress.report('CLONE', `Cloning ${input.target_agent.github_repo}`);
     localPath = await cloneOrPull(input.target_agent.github_repo, patch_id, traceId);
+
+    await progress.report('BRANCH', `Creating feature branch for ${patch_id}`);
     branchName = getBranchName(patch_id, input.assignment.title);
     await createBranch(localPath, branchName, traceId, patch_id);
     await updatePatchStatus(patch_id, 'analyzing', { branch_name: branchName });
 
     // Step 4: Change plan
+    await progress.report('ANALYZE', `Requesting change plan from Bridge Agent for ${patch_id}`);
     const changePlan = await buildChangePlan(input, localPath, traceId);
 
     if (changePlan.files.length === 0) {
@@ -53,11 +63,13 @@ export async function executePatch(input: PatchInputData): Promise<void> {
 
     // Step 5: Implement
     await updatePatchStatus(patch_id, 'implementing');
+    await progress.report('IMPLEMENT', `Implementing ${changePlan.files.length} file(s) for ${patch_id}`);
     patchFiles = await applyChangePlan(localPath, changePlan.files, patch_id, traceId);
     await savePatchFiles(patchFiles);
 
     // Step 6: Test
     await updatePatchStatus(patch_id, 'testing');
+    await progress.report('VERIFY', `Running test suite on patched ${targetAgent}`);
     testResult = await runTests(localPath, patch_id, traceId);
 
     if (!testResult.passed) {
@@ -67,10 +79,13 @@ export async function executePatch(input: PatchInputData): Promise<void> {
     }
 
     // Step 7-8: Commit + push
+    await progress.report('COMMIT', `Committing ${patchFiles.length} changed file(s)`);
     const commitMsg = buildCommitMessage(input, patchFiles);
     await commitAndPush(localPath, branchName, commitMsg, traceId, patch_id);
+    await progress.report('PUSH', `Pushing branch ${branchName} to remote`);
 
     // Step 9: Create PR
+    await progress.report('PR', `Creating Pull Request on ${input.target_agent.github_repo}`);
     const pr = await createPullRequest(input, branchName, patchFiles, testResult, traceId);
     await updatePatchStatus(patch_id, 'pr_created', {
       pr_url: pr.url,
@@ -79,6 +94,7 @@ export async function executePatch(input: PatchInputData): Promise<void> {
 
     // Step 10: Complete
     await updatePatchStatus(patch_id, 'completed');
+    await progress.report('COMPLETE', `${patch_id} complete — PR #${pr.number} opened on ${input.target_agent.github_repo}`, pr.url);
     logger.info('Patch execution completed', {
       trace_id: traceId,
       patch_id,
@@ -95,6 +111,7 @@ export async function executePatch(input: PatchInputData): Promise<void> {
       error: error.message,
     });
 
+    await progress.report('FAILED', `${patch_id} failed — ${error.message}`);
     await updatePatchStatus(patch_id, isClarification ? 'clarification_required' : 'failed', {
       error_message: error.message,
     });

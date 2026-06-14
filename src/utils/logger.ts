@@ -21,7 +21,7 @@ const logger = winston.createLogger({
   defaultMeta: { agent: 'patch-agent', service: 'devos-patch-agent' },
   transports: [
     new winston.transports.Console(),
-    new winston.transports.File({ filename: `${logDir}/patch-agent.log` }),
+    new winston.transports.File({ filename: `${logDir}/agent.log` }),
   ],
 });
 
