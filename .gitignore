@@ -31,3 +31,6 @@ coverage/
 
 # SQLite data
 data/
+
+# Pippin scratch space — written directly by Node.js fs, not tracked
+workspace/
