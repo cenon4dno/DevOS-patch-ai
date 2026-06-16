@@ -8,7 +8,7 @@
  *              Fire-and-forget — a failed POST never blocks patch execution.
  */
 
-import logger from '../utils/logger.js';
+import logger from '../utils/logger';
 
 export type PatchProgressStep =
   | 'RECEIVE'
